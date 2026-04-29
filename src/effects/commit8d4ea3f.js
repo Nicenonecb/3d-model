@@ -6,6 +6,7 @@ export const commit8d4ea3fEffect = {
   features: {
     neuralNetwork: false,
     autoSelectDefaultMesh: true,
+    sciFiAugmentation: false,
   },
   camera: {
     distanceMultiplier: 1.78,

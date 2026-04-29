@@ -9,15 +9,41 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { cleanWhiteEffect } from './effects/cleanWhite.js'
 import { commit8d4ea3fEffect } from './effects/commit8d4ea3f.js'
+import { quantumCortexEffect } from './effects/quantumCortex.js'
 
 const canvasHost = ref(null)
 const status = ref('正在加载 008.glb')
 const selectedMaterialLabel = ref('请选择脑区')
+const selectedRegionColor = ref('')
 const regionTabs = ref([])
 const activeRegionKey = ref('')
-const effectPresets = [cleanWhiteEffect, commit8d4ea3fEffect]
+const effectPresets = [cleanWhiteEffect, commit8d4ea3fEffect, quantumCortexEffect]
 const activeEffectKey = ref(cleanWhiteEffect.key)
 const activeEffect = computed(() => effectPresets.find((effect) => effect.key === activeEffectKey.value) || cleanWhiteEffect)
+const REGION_PALETTE = {
+  prefrontalCortex: { label: 'Prefrontal cortex', color: '#FF5D34' },
+  posteriorFrontalLobe: { label: 'Posterior frontal lobe', color: '#155EEF' },
+  parietalLobe: { label: 'Parietal lobe', color: '#2193FF' },
+  occipitalLobe: { label: 'Occipital lobe', color: '#9C6FFF' },
+  cerebellum: { label: 'Cerebellum', color: '#369F21' },
+  brainstem: { label: 'Brainstem', color: '#FF9100' },
+  hippocampus: { label: 'Hippocampus', color: '#FF4888' },
+  amygdala: { label: 'Amygdala', color: '#E18001' },
+}
+
+const REGION_BY_NODE_NAME = {
+  zuoeye: REGION_PALETTE.posteriorFrontalLobe,
+  youeye: REGION_PALETTE.posteriorFrontalLobe,
+  zuodingye: REGION_PALETTE.parietalLobe,
+  youdingye: REGION_PALETTE.parietalLobe,
+  zuozhenye: REGION_PALETTE.occipitalLobe,
+  youzhenye: REGION_PALETTE.occipitalLobe,
+  xiaonao: REGION_PALETTE.cerebellum,
+  naogan: REGION_PALETTE.brainstem,
+  haimati: REGION_PALETTE.hippocampus,
+  xingrenhe: REGION_PALETTE.amygdala,
+}
+const FRONTAL_NODE_NAMES = new Set(['zuoeye', 'youeye'])
 
 const renderSettings = reactive({
   ...cleanWhiteEffect.renderSettings,
@@ -34,6 +60,7 @@ let brainModel
 let baseGroup
 let scanRing
 let neuralGlowGroup
+let sciFiAugmentationGroup
 let modelMaxAxis
 let selectedMesh
 let animationFrame
@@ -41,19 +68,23 @@ let resizeObserver
 let pointerDown
 let glowSpriteTexture
 let starSpriteTexture
+let premiumAuraTexture
+let premiumCausticTexture
 
 const clock = new THREE.Clock()
 const raycaster = new THREE.Raycaster()
 const pointer = new THREE.Vector2()
 const meshClickTargets = []
 const meshByRegionKey = new Map()
+const selectedBrainMaterialByColor = new Map()
 const animatedMaterials = []
 const neuralLineMaterials = []
 const neuralSparkSprites = []
 const neuralTravelSignals = []
+const corticalFlowParticles = []
+const sciFiAccentObjects = []
 const getEffect = () => activeEffect.value
 const transparentBrainMaterial = createTransparentBrainMaterial()
-const selectedBrainMaterial = createSelectedBrainMaterial()
 
 const updateRenderSettings = () => {
   if (renderer) renderer.toneMappingExposure = renderSettings.exposure
@@ -80,10 +111,12 @@ const applyMaterialPreset = () => {
   transparentBrainMaterial.emissiveIntensity = effect.material.brainEmissiveIntensity
   transparentBrainMaterial.opacity = effect.material.brainOpacity
 
-  selectedBrainMaterial.color.set(effect.colors.selected)
-  selectedBrainMaterial.emissive.set(effect.colors.selectedEmissive)
-  selectedBrainMaterial.emissiveIntensity = effect.material.selectedEmissiveIntensity
-  selectedBrainMaterial.opacity = effect.material.selectedOpacity
+  selectedBrainMaterialByColor.forEach((material, color) => {
+    material.color.set(color)
+    material.emissive.set(color)
+    material.emissiveIntensity = effect.material.selectedEmissiveIntensity
+    material.opacity = effect.material.selectedOpacity
+  })
 
   animatedMaterials.forEach((material) => {
     material.uniforms?.glowColor?.value.set(effect.colors.fresnel)
@@ -97,27 +130,43 @@ const applyMaterialPreset = () => {
     sprite.material.color.set(sprite.userData.star ? effect.colors.neuralStrong : effect.colors.neural)
   })
 
-  baseGroup?.traverse((child) => {
-    const colorKey = child.material?.userData?.effectColor
-    if (!colorKey) return
-    child.material.color.set(effect.colors[colorKey])
-    child.material.blending = getBlendingMode(effect.base.blending)
-    const opacityKey = child.material.userData.effectOpacity
-    child.material.userData.baseOpacity = effect.base[opacityKey]
-    child.material.opacity = effect.base[opacityKey]
+  corticalFlowParticles.forEach((particle, index) => {
+    particle.material.color.set(index % 5 === 0 ? effect.colors.neuralStrong : effect.colors.neural)
+  })
+
+  ;[baseGroup, sciFiAugmentationGroup].forEach((group) => {
+    group?.traverse((child) => {
+      const materials = Array.isArray(child.material) ? child.material : [child.material]
+      materials.filter(Boolean).forEach((material) => {
+        const colorKey = material.userData?.effectColor
+        if (colorKey && material.color) material.color.set(effect.colors[colorKey] || effect.colors.baseRing)
+        if (material.blending !== undefined) material.blending = getBlendingMode(effect.base.blending)
+
+        const opacityKey = material.userData?.effectOpacity
+        if (!opacityKey) return
+        const nextOpacity = effect.sciFi?.[opacityKey] ?? effect.base?.[opacityKey] ?? material.userData.baseOpacity
+        material.userData.baseOpacity = nextOpacity
+        material.opacity = nextOpacity
+      })
+    })
   })
 }
 
 const getDefaultMesh = () => meshClickTargets.find((mesh) => mesh.name === 'zuozhenye') || meshClickTargets[0]
 
 const clearSelectedMesh = () => {
-  if (selectedMesh) selectedMesh.material = transparentBrainMaterial
+  if (selectedMesh) {
+    selectedMesh.material = transparentBrainMaterial
+    setMeshFresnelColor(selectedMesh, getEffect().colors.fresnel)
+  }
   selectedMesh = null
   activeRegionKey.value = ''
+  selectedRegionColor.value = ''
 }
 
 const applyFeatureVisibility = () => {
   if (neuralGlowGroup) neuralGlowGroup.visible = getEffect().features.neuralNetwork
+  if (sciFiAugmentationGroup) sciFiAugmentationGroup.visible = Boolean(getEffect().features.sciFiAugmentation)
 }
 
 const applySelectionPreset = () => {
@@ -191,12 +240,12 @@ function createTransparentBrainMaterial() {
   })
 }
 
-function createSelectedBrainMaterial() {
+function createSelectedBrainMaterial(color) {
   const effect = getEffect()
   return new THREE.MeshPhysicalMaterial({
-    name: '选中区域蓝色材质',
-    color: effect.colors.selected,
-    emissive: effect.colors.selectedEmissive,
+    name: `${color} 选中区域材质`,
+    color,
+    emissive: color,
     emissiveIntensity: effect.material.selectedEmissiveIntensity,
     metalness: 0.02,
     roughness: 0.16,
@@ -210,6 +259,51 @@ function createSelectedBrainMaterial() {
     side: THREE.DoubleSide,
     depthWrite: false,
   })
+}
+
+const getSelectedBrainMaterial = (color) => {
+  const regionColor = (color || getEffect().colors.selected).toUpperCase()
+  if (!selectedBrainMaterialByColor.has(regionColor)) {
+    selectedBrainMaterialByColor.set(regionColor, createSelectedBrainMaterial(regionColor))
+  }
+
+  return selectedBrainMaterialByColor.get(regionColor)
+}
+
+const getRegionDefinition = (meshName) => {
+  const region = REGION_BY_NODE_NAME[meshName]
+  if (region) return region
+
+  return {
+    label: meshName || 'Unknown region',
+    color: getEffect().colors.selected,
+  }
+}
+
+const getRegionForMeshSelection = (mesh, hitPoint) => {
+  let region
+  if (hitPoint && FRONTAL_NODE_NAMES.has(mesh.name) && mesh.userData.localBounds) {
+    const localPoint = mesh.worldToLocal(hitPoint.clone())
+    const { min, max } = mesh.userData.localBounds
+    const prefrontalCutoff = min.z + (max.z - min.z) * 0.5
+    region = localPoint.z >= prefrontalCutoff
+      ? REGION_PALETTE.prefrontalCortex
+      : REGION_PALETTE.posteriorFrontalLobe
+  } else {
+    region = {
+      label: mesh.userData.regionLabel || mesh.name || '选中区域',
+      color: mesh.userData.regionColor || getEffect().colors.selected,
+    }
+  }
+
+  if (getEffect().features.useEffectSelectionColor) {
+    return {
+      ...region,
+      color: getEffect().colors.selected,
+    }
+  }
+
+  return region
 }
 
 const createFresnelMaterial = () => {
@@ -258,7 +352,15 @@ const addFresnelShell = (mesh) => {
   shell.name = 'frontend-generated-fresnel-shell'
   shell.scale.setScalar(1.035)
   shell.renderOrder = 2
+  shell.userData.isFresnelShell = true
   mesh.add(shell)
+}
+
+const setMeshFresnelColor = (mesh, color) => {
+  mesh.children.forEach((child) => {
+    if (!child.userData.isFresnelShell || !child.material?.uniforms?.glowColor) return
+    child.material.uniforms.glowColor.value.set(color)
+  })
 }
 
 const createGlowSpriteTexture = () => {
@@ -313,6 +415,80 @@ const createStarSpriteTexture = () => {
   return starSpriteTexture
 }
 
+const createPremiumAuraTexture = () => {
+  if (premiumAuraTexture) return premiumAuraTexture
+
+  const canvas = document.createElement('canvas')
+  canvas.width = 512
+  canvas.height = 512
+  const context = canvas.getContext('2d')
+
+  const gradient = context.createRadialGradient(256, 240, 18, 256, 240, 242)
+  gradient.addColorStop(0, 'rgba(255, 255, 255, 0.78)')
+  gradient.addColorStop(0.22, 'rgba(126, 220, 255, 0.32)')
+  gradient.addColorStop(0.52, 'rgba(77, 168, 255, 0.12)')
+  gradient.addColorStop(1, 'rgba(77, 168, 255, 0)')
+  context.fillStyle = gradient
+  context.fillRect(0, 0, 512, 512)
+
+  const shaft = context.createLinearGradient(210, 0, 302, 512)
+  shaft.addColorStop(0, 'rgba(255, 255, 255, 0)')
+  shaft.addColorStop(0.42, 'rgba(255, 255, 255, 0.34)')
+  shaft.addColorStop(0.58, 'rgba(126, 220, 255, 0.18)')
+  shaft.addColorStop(1, 'rgba(255, 255, 255, 0)')
+  context.fillStyle = shaft
+  context.beginPath()
+  context.moveTo(206, 0)
+  context.lineTo(306, 0)
+  context.lineTo(376, 512)
+  context.lineTo(136, 512)
+  context.closePath()
+  context.fill()
+
+  premiumAuraTexture = new THREE.CanvasTexture(canvas)
+  premiumAuraTexture.colorSpace = THREE.SRGBColorSpace
+  return premiumAuraTexture
+}
+
+const createPremiumCausticTexture = () => {
+  if (premiumCausticTexture) return premiumCausticTexture
+
+  const canvas = document.createElement('canvas')
+  canvas.width = 768
+  canvas.height = 384
+  const context = canvas.getContext('2d')
+  context.clearRect(0, 0, canvas.width, canvas.height)
+
+  const glow = context.createRadialGradient(384, 192, 12, 384, 192, 230)
+  glow.addColorStop(0, 'rgba(126, 220, 255, 0.22)')
+  glow.addColorStop(0.48, 'rgba(77, 168, 255, 0.08)')
+  glow.addColorStop(1, 'rgba(77, 168, 255, 0)')
+  context.fillStyle = glow
+  context.fillRect(0, 0, canvas.width, canvas.height)
+
+  context.lineCap = 'round'
+  ;[
+    [92, 178, 218, 86, 362, 118, 532, 86],
+    [146, 246, 288, 186, 458, 232, 638, 172],
+    [236, 292, 326, 218, 476, 308, 590, 250],
+    [184, 134, 300, 168, 408, 70, 606, 122],
+    [274, 188, 360, 142, 452, 168, 566, 130],
+  ].forEach(([x1, y1, cx1, cy1, cx2, cy2, x2, y2], index) => {
+    context.strokeStyle = index % 2 === 0
+      ? 'rgba(126, 220, 255, 0.42)'
+      : 'rgba(255, 255, 255, 0.5)'
+    context.lineWidth = index % 2 === 0 ? 2.2 : 1.4
+    context.beginPath()
+    context.moveTo(x1, y1)
+    context.bezierCurveTo(cx1, cy1, cx2, cy2, x2, y2)
+    context.stroke()
+  })
+
+  premiumCausticTexture = new THREE.CanvasTexture(canvas)
+  premiumCausticTexture.colorSpace = THREE.SRGBColorSpace
+  return premiumCausticTexture
+}
+
 const createGlowSprite = ({ position, maxAxis, scale, opacity, phase = 0, star = false }) => {
   const effect = getEffect()
   const material = setBaseMaterialOptions(new THREE.SpriteMaterial({
@@ -349,15 +525,27 @@ const createBranchCurve = (points, size, maxAxis) => new THREE.CatmullRomCurve3(
 
 const createNeuralLine = (curve, maxAxis, index) => {
   const effect = getEffect()
-  const tube = new THREE.TubeGeometry(curve, 96, maxAxis * (index % 3 === 0 ? 0.0026 : 0.0018), 8, false)
+  const mainFiber = Boolean(curve.userData?.mainFiber)
+  const longRangeFiber = Boolean(curve.userData?.longRangeFiber)
+  const localFiber = Boolean(curve.userData?.localFiber)
+  const radius = mainFiber ? 0.00135 : longRangeFiber ? 0.00108 : localFiber ? 0.00062 : index % 3 === 0 ? 0.00095 : 0.00074
+  const tube = new THREE.TubeGeometry(
+    curve,
+    112,
+    maxAxis * radius,
+    8,
+    false,
+  )
   const material = setBaseMaterialOptions(new THREE.MeshBasicMaterial({
-    color: index % 4 === 0 ? effect.colors.neuralStrong : effect.colors.neural,
+    color: mainFiber || longRangeFiber || index % 4 === 0 ? effect.colors.neuralStrong : effect.colors.neural,
     transparent: true,
-    opacity: index % 4 === 0 ? 0.68 : 0.48,
+    opacity: mainFiber ? 0.62 : longRangeFiber ? 0.52 : localFiber ? 0.22 : index % 4 === 0 ? 0.42 : 0.31,
     blending: THREE.AdditiveBlending,
     depthTest: false,
     depthWrite: false,
   }))
+  material.userData.baseOpacity = material.opacity
+  material.userData.neuralStrong = mainFiber || longRangeFiber || index % 4 === 0
   neuralLineMaterials.push(material)
 
   const line = new THREE.Mesh(tube, material)
@@ -366,12 +554,14 @@ const createNeuralLine = (curve, maxAxis, index) => {
 }
 
 const createTravelSignal = (curve, maxAxis, branchIndex) => {
+  if (curve.userData?.localFiber) return []
+
   const sprites = [0, 1, 2].map((trailIndex) => ({
     sprite: createGlowSprite({
       position: curve.getPointAt(0),
       maxAxis,
-      scale: 0.04 - trailIndex * 0.007,
-      opacity: 0.95 - trailIndex * 0.2,
+      scale: 0.03 - trailIndex * 0.005,
+      opacity: 0.82 - trailIndex * 0.18,
       phase: branchIndex * 0.7 + trailIndex,
       star: trailIndex === 0,
     }),
@@ -389,48 +579,285 @@ const createTravelSignal = (curve, maxAxis, branchIndex) => {
   return sprites.map(({ sprite }) => sprite)
 }
 
+const seededNoise = (seed) => {
+  const value = Math.sin(seed * 91.345) * 9374.43
+  return value - Math.floor(value)
+}
+
+const createCorticalFlowParticleLayer = (maxAxis, size) => {
+  const effect = getEffect()
+  const group = new THREE.Group()
+  group.name = 'cortical-front-to-back-flow-layer'
+
+  const lanes = [
+    { x: -0.66, y: 0.34, sway: 0.1 },
+    { x: -0.42, y: 0.58, sway: 0.12 },
+    { x: -0.16, y: 0.78, sway: 0.08 },
+    { x: 0.16, y: 0.78, sway: 0.08 },
+    { x: 0.42, y: 0.58, sway: 0.12 },
+    { x: 0.66, y: 0.34, sway: 0.1 },
+    { x: -0.8, y: 0.16, sway: 0.05 },
+    { x: 0.8, y: 0.16, sway: 0.05 },
+  ]
+
+  const particleCount = 88
+  for (let index = 0; index < particleCount; index += 1) {
+    const lane = lanes[index % lanes.length]
+    const seed = index * 13.17
+    const flow = {
+      baseX: lane.x + (seededNoise(seed) - 0.5) * 0.08,
+      baseY: lane.y + (seededNoise(seed + 1.4) - 0.5) * 0.1,
+      sway: lane.sway,
+      startZ: 0.78 + seededNoise(seed + 2.5) * 0.08,
+      endZ: -0.82 + seededNoise(seed + 3.6) * 0.08,
+      speed: 0.045 + seededNoise(seed + 4.7) * 0.035,
+      offset: seededNoise(seed + 5.8),
+      phase: seededNoise(seed + 6.9) * Math.PI * 2,
+      size,
+      maxAxis,
+    }
+    const progress = flow.offset
+    const position = brainSpacePoint([
+      flow.baseX + Math.sin(progress * Math.PI * 2 + flow.phase) * flow.sway,
+      flow.baseY + Math.sin(progress * Math.PI) * 0.08,
+      THREE.MathUtils.lerp(flow.startZ, flow.endZ, progress),
+    ], size, maxAxis)
+
+    const material = setBaseMaterialOptions(new THREE.SpriteMaterial({
+      map: createGlowSpriteTexture(),
+      color: index % 5 === 0 ? effect.colors.neuralStrong : effect.colors.neural,
+      transparent: true,
+      opacity: 0.28 + seededNoise(seed + 7.1) * 0.24,
+      blending: THREE.AdditiveBlending,
+      depthTest: false,
+      depthWrite: false,
+    }))
+    const particle = new THREE.Sprite(material)
+    const particleSize = maxAxis * (0.008 + seededNoise(seed + 8.2) * 0.006)
+    particle.position.copy(position)
+    particle.scale.set(particleSize, particleSize, particleSize)
+    particle.renderOrder = 8
+    particle.userData.baseScale = particleSize
+    particle.userData.baseOpacity = material.opacity
+    particle.userData.corticalFlow = flow
+    corticalFlowParticles.push(particle)
+    group.add(particle)
+  }
+
+  return group
+}
+
 const createNeuralGlowNetwork = (maxAxis, size) => {
   const group = new THREE.Group()
   group.name = 'memorybear-style-neural-glow'
 
-  const centerHub = [-0.05, -0.12, 0.12]
-  const upperHub = [0.02, 0.18, 0.08]
-  const cortexTargets = [
-    [-0.88, 0.28, 0.06], [-0.78, 0.48, -0.22], [-0.58, 0.66, 0.16],
-    [-0.32, 0.78, -0.08], [-0.08, 0.82, 0.18], [0.18, 0.76, -0.12],
-    [0.44, 0.66, 0.14], [0.72, 0.48, -0.1], [0.88, 0.22, 0.08],
-    [0.72, -0.08, 0.22], [0.42, -0.24, 0.28], [0.1, -0.28, 0.32],
-    [-0.24, -0.18, 0.34], [-0.58, 0.06, 0.2], [-0.72, 0.24, -0.16],
-    [-0.54, 0.38, 0.42], [-0.22, 0.56, 0.42], [0.28, 0.54, 0.4],
-    [0.62, 0.28, 0.34], [-0.42, 0.3, -0.42], [0.42, 0.34, -0.44],
-    [-0.02, 0.88, -0.02], [0.58, 0.62, -0.32], [-0.68, 0.64, 0.3],
+  const energyCore = [-0.02, -0.32, 0.04]
+  const fiberBundles = [
+    {
+      relay: [-0.18, 0.08, 0.5],
+      longRange: true,
+      targets: [[-0.68, 0.16, 0.72], [-0.52, 0.38, 0.78], [-0.28, 0.6, 0.74], [-0.04, 0.76, 0.66], [-0.78, -0.02, 0.56], [-0.36, 0.18, 0.86]],
+    },
+    {
+      relay: [0.18, 0.08, 0.5],
+      longRange: true,
+      targets: [[0.68, 0.16, 0.72], [0.52, 0.38, 0.78], [0.28, 0.6, 0.74], [0.04, 0.76, 0.66], [0.78, -0.02, 0.56], [0.36, 0.18, 0.86]],
+    },
+    {
+      relay: [-0.2, 0.16, -0.55],
+      longRange: true,
+      targets: [[-0.7, 0.14, -0.72], [-0.58, 0.36, -0.82], [-0.34, 0.58, -0.86], [-0.08, 0.74, -0.76], [-0.78, -0.02, -0.58], [-0.42, 0.18, -0.9]],
+    },
+    {
+      relay: [0.2, 0.16, -0.55],
+      longRange: true,
+      targets: [[0.7, 0.14, -0.72], [0.58, 0.36, -0.82], [0.34, 0.58, -0.86], [0.08, 0.74, -0.76], [0.78, -0.02, -0.58], [0.42, 0.18, -0.9]],
+    },
+    {
+      relay: [-0.5, 0.08, 0.02],
+      targets: [[-0.82, 0.12, 0.18], [-0.78, 0.28, -0.04], [-0.66, 0.44, -0.18], [-0.46, 0.24, 0.28], [-0.74, -0.04, 0.2]],
+    },
+    {
+      relay: [0.5, 0.08, 0.02],
+      targets: [[0.82, 0.12, 0.18], [0.78, 0.28, -0.04], [0.66, 0.44, -0.18], [0.46, 0.24, 0.28], [0.74, -0.04, 0.2]],
+    },
+    {
+      relay: [-0.28, 0.34, -0.12],
+      targets: [[-0.56, 0.64, -0.22], [-0.36, 0.78, -0.12], [-0.12, 0.82, -0.04], [-0.68, 0.48, 0.06], [-0.48, 0.7, 0.2], [-0.22, 0.58, -0.32], [-0.62, 0.36, -0.34]],
+    },
+    {
+      relay: [0.28, 0.34, -0.12],
+      targets: [[0.56, 0.64, -0.22], [0.36, 0.78, -0.12], [0.12, 0.82, -0.04], [0.68, 0.48, 0.06], [0.48, 0.7, 0.2], [0.22, 0.58, -0.32], [0.62, 0.36, -0.34]],
+    },
+    {
+      relay: [0, 0.44, -0.32],
+      targets: [[-0.18, 0.78, -0.5], [0.18, 0.78, -0.5], [0, 0.86, -0.34]],
+    },
   ]
 
-  const branches = cortexTargets.map((target, index) => {
-    const hub = index % 4 === 0 ? upperHub : centerHub
-    const control = [
-      target[0] * 0.55 + Math.sin(index * 1.3) * 0.06,
-      target[1] * 0.54 + (target[1] > 0.45 ? 0.12 : 0.04),
-      target[2] * 0.46 + Math.cos(index * 1.7) * 0.05,
+  const source = createGlowSprite({
+    position: brainSpacePoint(energyCore, size, maxAxis),
+    maxAxis,
+    scale: 0.058,
+    opacity: 0.92,
+    phase: 0,
+    star: true,
+  })
+  group.add(source)
+
+  const curves = []
+  fiberBundles.forEach((bundle, bundleIndex) => {
+    const stemLift = [
+      energyCore[0] * 0.72 + bundle.relay[0] * 0.18,
+      energyCore[1] * 0.54 + bundle.relay[1] * 0.32 + 0.08,
+      energyCore[2] * 0.72 + bundle.relay[2] * 0.18,
     ]
-    return createBranchCurve([centerHub, hub, control, target], size, maxAxis)
+    const trunk = createBranchCurve([energyCore, stemLift, bundle.relay], size, maxAxis)
+    trunk.userData = { mainFiber: true, longRangeFiber: Boolean(bundle.longRange) }
+    curves.push(trunk)
+
+    const relayGlow = createGlowSprite({
+      position: brainSpacePoint(bundle.relay, size, maxAxis),
+      maxAxis,
+      scale: 0.02,
+      opacity: 0.72,
+      phase: bundleIndex * 0.7,
+      star: true,
+    })
+    group.add(relayGlow)
+
+    bundle.targets.forEach((target, targetIndex) => {
+      const curveIndex = curves.length
+      const drift = Math.sin((bundleIndex + 1) * (targetIndex + 2)) * 0.055
+      const branchBend = [
+        bundle.relay[0] * 0.54 + target[0] * 0.4 + drift,
+        bundle.relay[1] * 0.42 + target[1] * 0.5 + 0.08,
+        bundle.relay[2] * 0.5 + target[2] * 0.44 + Math.cos(curveIndex * 1.7) * 0.045,
+      ]
+      const cortexSkim = [
+        target[0] * 0.96 + bundle.relay[0] * 0.02,
+        target[1] * 0.96 + 0.02,
+        target[2] * 0.98 + bundle.relay[2] * 0.02,
+      ]
+      const branch = createBranchCurve([bundle.relay, branchBend, cortexSkim, target], size, maxAxis)
+      branch.userData = { longRangeFiber: Boolean(bundle.longRange) }
+      curves.push(branch)
+    })
+
   })
 
-  branches.forEach((curve, index) => {
+  curves.forEach((curve, index) => {
     group.add(createNeuralLine(curve, maxAxis, index))
     createTravelSignal(curve, maxAxis, index).forEach((sprite) => group.add(sprite))
+    if (curve.userData?.mainFiber) return
 
     const terminal = createGlowSprite({
       position: curve.getPointAt(1),
       maxAxis,
-      scale: 0.022 + (index % 3) * 0.003,
-      opacity: 1,
+      scale: 0.017 + (index % 3) * 0.002,
+      opacity: 0.82,
       phase: index * 0.91,
       star: true,
     })
     group.add(terminal)
   })
 
+  group.add(createCorticalFlowParticleLayer(maxAxis, size))
+
+  return group
+}
+
+const createPremiumLightPlane = ({ maxAxis, texture, colorKey, opacityKey, position, rotation, scale, renderOrder = 4 }) => {
+  const effect = getEffect()
+  const material = setBaseMaterialOptions(new THREE.MeshBasicMaterial({
+    map: texture,
+    color: effect.colors[colorKey] || effect.colors.premiumAura,
+    transparent: true,
+    opacity: effect.sciFi?.[opacityKey] ?? 0.35,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  }))
+  material.userData.effectColor = colorKey
+  material.userData.effectOpacity = opacityKey
+  material.userData.baseOpacity = material.opacity
+
+  const plane = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), material)
+  plane.position.set(position.x * maxAxis, position.y * maxAxis, position.z * maxAxis)
+  plane.rotation.set(rotation.x, rotation.y, rotation.z)
+  plane.scale.set(scale.x * maxAxis, scale.y * maxAxis, 1)
+  plane.renderOrder = renderOrder
+  plane.userData.basePosition = plane.position.clone()
+  plane.userData.floatPhase = position.phase || 0
+  sciFiAccentObjects.push(plane)
+  return plane
+}
+
+const createPremiumGlint = ({ maxAxis, position, scale, phase }) => {
+  const effect = getEffect()
+  const material = setBaseMaterialOptions(new THREE.SpriteMaterial({
+    map: createStarSpriteTexture(),
+    color: effect.colors.premiumGlint || '#ffffff',
+    transparent: true,
+    opacity: effect.sciFi?.glintOpacity ?? 0.8,
+    blending: THREE.AdditiveBlending,
+    depthTest: false,
+    depthWrite: false,
+  }))
+  material.userData.effectColor = 'premiumGlint'
+  material.userData.effectOpacity = 'glintOpacity'
+  material.userData.baseOpacity = material.opacity
+
+  const sprite = new THREE.Sprite(material)
+  const size = maxAxis * scale
+  sprite.position.set(position.x * maxAxis, position.y * maxAxis, position.z * maxAxis)
+  sprite.scale.set(size, size, size)
+  sprite.renderOrder = 10
+  sprite.userData.baseScale = size
+  sprite.userData.baseOpacity = material.opacity
+  sprite.userData.phase = phase
+  sprite.userData.premiumGlint = true
+  sciFiAccentObjects.push(sprite)
+  return sprite
+}
+
+const createSciFiAugmentation = (maxAxis) => {
+  const effect = getEffect()
+  const group = new THREE.Group()
+  group.name = 'quantum-cortex-premium-optics'
+
+  group.add(createPremiumLightPlane({
+    maxAxis,
+    texture: createPremiumAuraTexture(),
+    colorKey: 'premiumAura',
+    opacityKey: 'auraOpacity',
+    position: { x: 0.08, y: 0.16, z: -0.24, phase: 0.2 },
+    rotation: { x: 0.06, y: -0.18, z: -0.04 },
+    scale: { x: 1.2, y: 1.05 },
+    renderOrder: 1,
+  }))
+
+  group.add(createPremiumLightPlane({
+    maxAxis,
+    texture: createPremiumCausticTexture(),
+    colorKey: 'premiumCaustic',
+    opacityKey: 'causticOpacity',
+    position: { x: 0, y: -0.52, z: 0.08, phase: 1.4 },
+    rotation: { x: -Math.PI / 2, y: 0, z: -0.04 },
+    scale: { x: 0.96, y: 0.42 },
+    renderOrder: 4,
+  }))
+
+  ;[
+    [{ x: -0.3, y: 0.34, z: 0.26 }, 0.04, 0.1],
+    [{ x: 0.18, y: 0.48, z: 0.16 }, 0.032, 1.2],
+    [{ x: 0.42, y: 0.12, z: 0.22 }, 0.028, 2.1],
+    [{ x: -0.02, y: -0.08, z: 0.34 }, 0.03, 3.3],
+  ].forEach(([position, scale, phase]) => {
+    group.add(createPremiumGlint({ maxAxis, position, scale, phase }))
+  })
+
+  group.visible = Boolean(effect.features.sciFiAugmentation)
   return group
 }
 
@@ -443,20 +870,26 @@ const prepareBrainModel = (loadedScene) => {
 
   regionTabs.value = meshes.map((mesh, index) => {
     const key = `region-${index + 1}`
+    const region = getRegionDefinition(mesh.name)
     mesh.name = mesh.name || `脑区 ${index + 1}`
     mesh.castShadow = true
     mesh.receiveShadow = true
     mesh.material = transparentBrainMaterial
     mesh.renderOrder = 3
+    mesh.geometry.computeBoundingBox()
     mesh.userData.regionKey = key
+    mesh.userData.regionLabel = region.label
+    mesh.userData.regionColor = region.color
+    mesh.userData.localBounds = mesh.geometry.boundingBox?.clone()
     meshClickTargets.push(mesh)
     meshByRegionKey.set(key, mesh)
     addFresnelShell(mesh)
 
     return {
       key,
-      label: `区域 ${index + 1}`,
+      label: region.label,
       detail: mesh.name,
+      color: region.color,
     }
   })
 }
@@ -471,7 +904,8 @@ const getBlendingMode = (mode) => (mode === 'normal' ? THREE.NormalBlending : TH
 const createHologramBase = (maxAxis, y) => {
   const effect = getEffect()
   const group = new THREE.Group()
-  const radius = maxAxis * 0.66
+  const radius = maxAxis * (effect.base.radiusScale ?? 0.66)
+  const tubeScale = effect.base.tubeScale ?? 1
   group.position.y = y
 
   const disc = new THREE.Mesh(
@@ -498,10 +932,11 @@ const createHologramBase = (maxAxis, y) => {
     depthWrite: false,
   }))
 
-  ;[0.24, 0.42, 0.66, 0.92].forEach((scale, index) => {
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(radius * scale, maxAxis * 0.0028, 10, 160), ringMaterial.clone())
+  ;[0.38, 0.64, 0.9].forEach((scale, index) => {
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(radius * scale, maxAxis * 0.0028 * tubeScale, 10, 160), ringMaterial.clone())
     ring.material.toneMapped = false
-    ring.material.userData.effectColor = 'baseRing'
+    ring.material.color.set(index % 2 === 0 ? effect.colors.baseRing : effect.colors.baseRingAlt)
+    ring.material.userData.effectColor = index % 2 === 0 ? 'baseRing' : 'baseRingAlt'
     ring.material.userData.effectOpacity = 'ringOpacity'
     ring.material.userData.baseOpacity = effect.base.ringOpacity
     ring.rotation.x = Math.PI / 2
@@ -510,7 +945,7 @@ const createHologramBase = (maxAxis, y) => {
   })
 
   scanRing = new THREE.Mesh(
-    new THREE.TorusGeometry(radius * 0.34, maxAxis * 0.0046, 12, 160),
+    new THREE.TorusGeometry(radius * 0.34, maxAxis * 0.0046 * tubeScale, 12, 160),
     setBaseMaterialOptions(new THREE.MeshBasicMaterial({
       color: effect.colors.scanRing,
       transparent: true,
@@ -525,31 +960,33 @@ const createHologramBase = (maxAxis, y) => {
   scanRing.rotation.x = Math.PI / 2
   group.add(scanRing)
 
-  const radialPositions = []
-  for (let index = 0; index < 48; index += 1) {
-    const angle = (index / 48) * Math.PI * 2
-    const inner = radius * (index % 3 === 0 ? 0.12 : 0.52)
-    const outer = radius * 0.98
-    radialPositions.push(Math.cos(angle) * inner, 0.004, Math.sin(angle) * inner)
-    radialPositions.push(Math.cos(angle) * outer, 0.004, Math.sin(angle) * outer)
-  }
+  if (effect.base.radialOpacity > 0) {
+    const radialPositions = []
+    for (let index = 0; index < 12; index += 1) {
+      const angle = (index / 12) * Math.PI * 2
+      const inner = radius * 0.72
+      const outer = radius * 0.92
+      radialPositions.push(Math.cos(angle) * inner, 0.004, Math.sin(angle) * inner)
+      radialPositions.push(Math.cos(angle) * outer, 0.004, Math.sin(angle) * outer)
+    }
 
-  const radialGeometry = new THREE.BufferGeometry()
-  radialGeometry.setAttribute('position', new THREE.Float32BufferAttribute(radialPositions, 3))
-  const radialLines = new THREE.LineSegments(
-    radialGeometry,
-    setBaseMaterialOptions(new THREE.LineBasicMaterial({
-      color: effect.colors.radial,
-      transparent: true,
-      opacity: effect.base.radialOpacity,
-      blending: getBlendingMode(effect.base.blending),
-      depthWrite: false,
-    })),
-  )
-  radialLines.material.userData.effectColor = 'radial'
-  radialLines.material.userData.effectOpacity = 'radialOpacity'
-  radialLines.material.userData.baseOpacity = effect.base.radialOpacity
-  group.add(radialLines)
+    const radialGeometry = new THREE.BufferGeometry()
+    radialGeometry.setAttribute('position', new THREE.Float32BufferAttribute(radialPositions, 3))
+    const radialLines = new THREE.LineSegments(
+      radialGeometry,
+      setBaseMaterialOptions(new THREE.LineBasicMaterial({
+        color: effect.colors.radial,
+        transparent: true,
+        opacity: effect.base.radialOpacity,
+        blending: getBlendingMode(effect.base.blending),
+        depthWrite: false,
+      })),
+    )
+    radialLines.material.userData.effectColor = 'radial'
+    radialLines.material.userData.effectOpacity = 'radialOpacity'
+    radialLines.material.userData.baseOpacity = effect.base.radialOpacity
+    group.add(radialLines)
+  }
 
   return group
 }
@@ -580,7 +1017,11 @@ const loadModel = async () => {
   neuralGlowGroup = createNeuralGlowNetwork(maxAxis, modelSize)
   brainRoot.add(neuralGlowGroup)
 
+  sciFiAugmentationGroup = createSciFiAugmentation(maxAxis)
+  brainModel.add(sciFiAugmentationGroup)
+
   applyFeatureVisibility()
+  applyMaterialPreset()
   applySelectionPreset()
   fitCameraToObject(brainModel)
   status.value = '008.glb 已加载，Memory Bear 风格蓝色脑光效果运行中'
@@ -592,13 +1033,21 @@ const updatePointerFromEvent = (event) => {
   pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
 }
 
-const selectMesh = (mesh) => {
+const selectMesh = (mesh, hitPoint) => {
   if (!mesh) return
-  if (selectedMesh) selectedMesh.material = transparentBrainMaterial
+  if (selectedMesh) {
+    selectedMesh.material = transparentBrainMaterial
+    setMeshFresnelColor(selectedMesh, getEffect().colors.fresnel)
+  }
+
+  const region = getRegionForMeshSelection(mesh, hitPoint)
+  const regionColor = region.color || getEffect().colors.selected
   selectedMesh = mesh
-  selectedMesh.material = selectedBrainMaterial
+  selectedMesh.material = getSelectedBrainMaterial(regionColor)
+  setMeshFresnelColor(selectedMesh, regionColor)
   activeRegionKey.value = mesh.userData.regionKey || ''
-  selectedMaterialLabel.value = regionTabs.value.find((item) => item.key === activeRegionKey.value)?.label || '蓝色选中区域'
+  selectedRegionColor.value = regionColor
+  selectedMaterialLabel.value = region.label || '选中区域'
 }
 
 const handleCanvasPointerDown = (event) => {
@@ -620,7 +1069,7 @@ const handleCanvasPointerUp = (event) => {
   raycaster.setFromCamera(pointer, camera)
 
   const [hit] = raycaster.intersectObjects(meshClickTargets, false)
-  if (hit?.object) selectMesh(hit.object)
+  if (hit?.object) selectMesh(hit.object, hit.point)
 }
 
 const createScene = () => {
@@ -710,7 +1159,8 @@ const animate = () => {
   }
 
   neuralLineMaterials.forEach((material, index) => {
-    material.opacity = (index % 4 === 0 ? 0.66 : 0.44) + Math.sin(elapsed * 1.6 + index) * 0.08
+    const baseOpacity = material.userData.baseOpacity ?? (index % 4 === 0 ? 0.66 : 0.44)
+    material.opacity = baseOpacity * (0.9 + Math.sin(elapsed * 1.6 + index) * 0.12)
   })
 
   neuralSparkSprites.forEach((sprite) => {
@@ -730,10 +1180,47 @@ const animate = () => {
     })
   })
 
+  corticalFlowParticles.forEach((particle, index) => {
+    const flow = particle.userData.corticalFlow
+    if (!flow) return
+    const progress = (elapsed * flow.speed + flow.offset) % 1
+    const point = [
+      flow.baseX + Math.sin(progress * Math.PI * 2 + flow.phase) * flow.sway,
+      flow.baseY + Math.sin(progress * Math.PI) * 0.08,
+      THREE.MathUtils.lerp(flow.startZ, flow.endZ, progress),
+    ]
+    particle.position.copy(brainSpacePoint(point, flow.size, flow.maxAxis))
+
+    const headGlow = Math.sin(progress * Math.PI)
+    const twinkle = 0.5 + 0.5 * Math.sin(elapsed * 3.2 + flow.phase)
+    const scale = particle.userData.baseScale * (0.82 + headGlow * 0.35 + twinkle * 0.1)
+    particle.scale.set(scale, scale, scale)
+    particle.material.opacity = particle.userData.baseOpacity * (0.36 + headGlow * 0.72)
+    particle.renderOrder = 8 + (index % 3)
+  })
+
   if (baseGroup) {
     baseGroup.rotation.y += delta * 0.12
     baseGroup.children.forEach((child) => {
       if (child.userData.spin) child.rotation.z += delta * child.userData.spin * 0.18
+    })
+  }
+
+  if (sciFiAugmentationGroup?.visible) {
+    sciFiAccentObjects.forEach((object, index) => {
+      const phase = object.userData.phase ?? object.userData.floatPhase ?? index
+      if (object.userData.premiumGlint) {
+        const twinkle = 0.5 + 0.5 * Math.sin(elapsed * 2.8 + phase)
+        const scale = object.userData.baseScale * (0.78 + twinkle * 0.34)
+        object.scale.set(scale, scale, scale)
+        object.material.opacity = object.userData.baseOpacity * (0.42 + twinkle * 0.48)
+        return
+      }
+
+      if (object.userData.basePosition) {
+        object.position.y = object.userData.basePosition.y + Math.sin(elapsed * 0.72 + phase) * 0.012 * modelMaxAxis
+        object.material.opacity = object.material.userData.baseOpacity * (0.86 + Math.sin(elapsed * 1.1 + phase) * 0.08)
+      }
     })
   }
 
@@ -772,6 +1259,8 @@ onBeforeUnmount(() => {
   composer?.dispose()
   glowSpriteTexture?.dispose()
   starSpriteTexture?.dispose()
+  premiumAuraTexture?.dispose()
+  premiumCausticTexture?.dispose()
   renderer?.domElement.removeEventListener('pointerdown', handleCanvasPointerDown)
   renderer?.domElement.removeEventListener('pointerup', handleCanvasPointerUp)
   renderer?.dispose()
@@ -796,7 +1285,18 @@ onBeforeUnmount(() => {
     </aside>
     <section class="viewer-shell" aria-label="008 GLB 分区展示页">
       <div class="stage-row">
-        <div ref="canvasHost" class="canvas-host" aria-label="008 GLB 白底分区大脑预览" />
+        <div ref="canvasHost" class="canvas-host" aria-label="008 GLB 白底分区大脑预览">
+          <div class="region-readout" aria-live="polite">
+            <span
+              class="region-readout__swatch"
+              :style="{ backgroundColor: selectedRegionColor || '#155EEF' }"
+            />
+            <span class="region-readout__copy">
+              <strong>{{ selectedMaterialLabel }}</strong>
+              <small>{{ selectedRegionColor || '点击脑区查看颜色' }}</small>
+            </span>
+          </div>
+        </div>
 
       </div>
     </section>
