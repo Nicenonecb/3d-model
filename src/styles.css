@@ -5,8 +5,8 @@
   --line: rgba(50, 146, 230, 0.16);
   --panel: rgba(255, 255, 255, 0.72);
   --panel-strong: rgba(255, 255, 255, 0.9);
-  --accent: #087dff;
-  --accent-strong: #15c8ff;
+  --accent: #155eef;
+  --accent-strong: #4da8ff;
   font-family: Avenir Next, Trebuchet MS, Verdana, sans-serif;
   color: var(--ink);
   background: var(--bg);
@@ -35,6 +35,7 @@ button {
 }
 
 .viewer-page {
+  position: relative;
   min-height: 100vh;
   padding: clamp(14px, 2.4vw, 28px);
   background:
@@ -49,6 +50,51 @@ button {
   max-width: 1380px;
   min-height: calc(100vh - clamp(28px, 4.8vw, 56px));
   margin: 0 auto;
+}
+
+.effect-switcher {
+  position: fixed;
+  top: clamp(24px, 5vh, 56px);
+  left: clamp(14px, 2.4vw, 28px);
+  z-index: 5;
+  display: grid;
+  width: 150px;
+  gap: 10px;
+}
+
+.effect-switcher__button {
+  display: grid;
+  gap: 2px;
+  padding: 12px 14px;
+  color: #64819b;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(50, 146, 230, 0.16);
+  border-radius: 16px;
+  box-shadow: 0 12px 36px rgba(37, 128, 215, 0.12);
+  backdrop-filter: blur(16px);
+}
+
+.effect-switcher__button span {
+  color: #082449;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.effect-switcher__button small {
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.effect-switcher__button--active {
+  color: #dff3ff;
+  background: linear-gradient(135deg, #155eef, #4da8ff);
+  border-color: rgba(77, 168, 255, 0.5);
+  box-shadow: 0 18px 44px rgba(21, 94, 239, 0.26);
+}
+
+.effect-switcher__button--active span {
+  color: #fff;
 }
 
 .stage-row {
@@ -97,6 +143,13 @@ button {
 }
 
 @media (max-width: 980px) {
+  .effect-switcher {
+    position: static;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: auto;
+    margin: 0 0 12px;
+  }
+
   .canvas-host {
     min-height: 68vh;
   }

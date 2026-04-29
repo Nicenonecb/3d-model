@@ -1,0 +1,51 @@
+export const commit8d4ea3fEffect = {
+  key: 'commit-8d4ea3f',
+  label: '提交原版',
+  description: '8d4ea3f 无发光粒子版本',
+  pageClass: 'effect-commit-8d4ea3f',
+  features: {
+    neuralNetwork: false,
+    autoSelectDefaultMesh: true,
+  },
+  camera: {
+    distanceMultiplier: 1.78,
+  },
+  renderSettings: {
+    exposure: 0.86,
+    bloomStrength: 0.2,
+    bloomThreshold: 0.82,
+    bloomRadius: 0.16,
+  },
+  scene: {
+    background: '#ffffff',
+    clear: '#ffffff',
+    fog: { type: 'linear', color: '#ffffff', near: 9, far: 28 },
+  },
+  colors: {
+    neural: '#4DA8FF',
+    neuralStrong: '#dff3ff',
+    rim: '#9edfff',
+    baseDisc: '#7edcff',
+    baseRing: '#29bbff',
+    scanRing: '#009dff',
+    radial: '#5acfff',
+    fresnel: '#9fd6ff',
+    selected: '#066fff',
+    selectedEmissive: '#0768ff',
+    brain: '#b8ddff',
+    brainEmissive: '#bde4ff',
+  },
+  material: {
+    brainOpacity: 0.38,
+    brainEmissiveIntensity: 0.055,
+    selectedOpacity: 0.9,
+    selectedEmissiveIntensity: 0.26,
+  },
+  base: {
+    blending: 'normal',
+    discOpacity: 0.22,
+    ringOpacity: 0.72,
+    scanOpacity: 0.86,
+    radialOpacity: 0.38,
+  },
+}

@@ -1,0 +1,51 @@
+export const cleanWhiteEffect = {
+  key: 'clean-white',
+  label: '白底蓝光',
+  description: '当前白底、神经光路版本',
+  pageClass: 'effect-clean-white',
+  features: {
+    neuralNetwork: true,
+    autoSelectDefaultMesh: false,
+  },
+  camera: {
+    distanceMultiplier: 1.38,
+  },
+  renderSettings: {
+    exposure: 0.9,
+    bloomStrength: 0.28,
+    bloomThreshold: 0.62,
+    bloomRadius: 0.18,
+  },
+  scene: {
+    background: '#ffffff',
+    clear: '#ffffff',
+    fog: { type: 'linear', color: '#ffffff', near: 9, far: 28 },
+  },
+  colors: {
+    neural: '#4DA8FF',
+    neuralStrong: '#dff3ff',
+    rim: '#8ccfff',
+    baseDisc: '#155EEF',
+    baseRing: '#4DA8FF',
+    scanRing: '#7edcff',
+    radial: '#5acfff',
+    fresnel: '#9fd6ff',
+    selected: '#066fff',
+    selectedEmissive: '#0768ff',
+    brain: '#b8ddff',
+    brainEmissive: '#155EEF',
+  },
+  material: {
+    brainOpacity: 0.42,
+    brainEmissiveIntensity: 0.08,
+    selectedOpacity: 0.86,
+    selectedEmissiveIntensity: 0.28,
+  },
+  base: {
+    blending: 'additive',
+    discOpacity: 0.13,
+    ringOpacity: 0.48,
+    scanOpacity: 0.68,
+    radialOpacity: 0.26,
+  },
+}
